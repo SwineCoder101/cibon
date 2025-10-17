@@ -4,7 +4,7 @@ import {FHE, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  import {ConfidentialFungibleToken} from "@openzeppelin/confidential-contracts/token/ConfidentialFungibleToken.sol";
 
-contract ERC7984MintableBurnable is ConfidentialFungibleToken, Ownable {
+contract ERC7984Example is ConfidentialFungibleToken, Ownable {
     constructor(
         address owner,
         string memory name,

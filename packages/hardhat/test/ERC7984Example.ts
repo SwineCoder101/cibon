@@ -7,7 +7,7 @@ describe("ERC7984Example", function () {
   let recipient: any;
   //   let other: any;
 
-  const INITIAL_AMOUNT = 1000;
+  //   const INITIAL_AMOUNT = 1000;
   const TRANSFER_AMOUNT = 100;
 
   beforeEach(async function () {
@@ -16,7 +16,6 @@ describe("ERC7984Example", function () {
     // Deploy ERC7984Example contract
     token = await ethers.deployContract("ERC7984Example", [
       owner.address,
-      INITIAL_AMOUNT,
       "Confidential Token",
       "CTKN",
       "https://example.com/token",
