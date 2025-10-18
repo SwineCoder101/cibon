@@ -9,6 +9,7 @@ type Signers = {
   deployer: HardhatEthersSigner;
   alice: HardhatEthersSigner;
   bob: HardhatEthersSigner;
+  admin: HardhatEthersSigner;
 };
 
 // Test emission factors (grams CO2e per unit with decimal precision)
@@ -21,15 +22,18 @@ const TEST_FACTORS = {
 };
 
 async function deployFixture() {
-  const [deployer] = await ethers.getSigners();
+  const ethSigners: HardhatEthersSigner[] = await ethers.getSigners();
+  const deployer = ethSigners[0];
+  const admin = ethSigners[3]; // Use the 4th signer as admin (index 3)
   
   // Deploy the carbon footprint calculator (oracle-free version)
   const factory = (await ethers.getContractFactory("CibonCarbonFootprintCalculator")) as CibonCarbonFootprintCalculator__factory;
-  const calculator = await factory.deploy(TEST_FACTORS);
+  const calculator = await factory.deploy(TEST_FACTORS, admin.address);
   
   return { 
     calculator,
-    calculatorAddress: await calculator.getAddress()
+    calculatorAddress: await calculator.getAddress(),
+    admin
   };
 }
 
@@ -37,13 +41,15 @@ describe("CibonCarbonFootprintCalculator", function () {
   let signers: Signers;
   let calculator: CibonCarbonFootprintCalculator;
   let calculatorAddress: string;
+  let admin: HardhatEthersSigner;
 
   before(async function () {
     const ethSigners: HardhatEthersSigner[] = await ethers.getSigners();
     signers = { 
       deployer: ethSigners[0], 
       alice: ethSigners[1], 
-      bob: ethSigners[2]
+      bob: ethSigners[2],
+      admin: ethSigners[3]
     };
   });
 
@@ -54,7 +60,7 @@ describe("CibonCarbonFootprintCalculator", function () {
       this.skip();
     }
 
-    ({ calculator, calculatorAddress } = await deployFixture());
+    ({ calculator, calculatorAddress, admin } = await deployFixture());
   });
 
   describe("Deployment", function () {
@@ -454,7 +460,7 @@ describe("CibonCarbonFootprintCalculator", function () {
   });
 
   describe("Admin Functions", function () {
-    it("should allow updating emission factors", async function () {
+    it("should allow admin to update emission factors", async function () {
       const newFactors = {
         gramsPerKwh: 500,
         gramsPerCarKm: 150,
@@ -462,7 +468,7 @@ describe("CibonCarbonFootprintCalculator", function () {
         gramsPerFlightKm: 300
       };
 
-      const tx = await calculator.setFactors(newFactors);
+      const tx = await calculator.connect(admin).setFactors(newFactors);
       await tx.wait();
 
       const factors = await calculator.factors();
@@ -472,7 +478,7 @@ describe("CibonCarbonFootprintCalculator", function () {
       expect(factors.gramsPerFlightKm).to.equal(newFactors.gramsPerFlightKm);
     });
 
-    it("should allow updating emission factors with decimal precision", async function () {
+    it("should allow admin to update emission factors with decimal precision", async function () {
       // Test decimal factors: 0.5, 0.15, 0.06, 0.3 (scaled by 1000)
       const newFactors = {
         gramsPerKwh: 500,      // 0.5 kg CO2e per kWh
@@ -481,7 +487,7 @@ describe("CibonCarbonFootprintCalculator", function () {
         gramsPerFlightKm: 300   // 0.3 kg CO2e per km by flight
       };
 
-      const tx = await calculator.setFactorsDecimal(
+      const tx = await calculator.connect(admin).setFactorsDecimal(
         newFactors.gramsPerKwh,
         newFactors.gramsPerCarKm,
         newFactors.gramsPerTransitKm,
@@ -498,6 +504,55 @@ describe("CibonCarbonFootprintCalculator", function () {
 
     it("should have correct scaler factor", async function () {
       expect(await calculator.SCALER_FACTOR()).to.equal(1000);
+    });
+
+    it("should have correct admin role", async function () {
+      expect(await calculator.ADMIN_ROLE()).to.equal(ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE")));
+    });
+
+    it("should verify admin has admin role", async function () {
+      expect(await calculator.hasRole(await calculator.ADMIN_ROLE(), admin.address)).to.be.true;
+    });
+
+    it("should verify non-admin does not have admin role", async function () {
+      expect(await calculator.hasRole(await calculator.ADMIN_ROLE(), signers.alice.address)).to.be.false;
+    });
+
+    it("should reject non-admin attempts to update factors", async function () {
+      const newFactors = {
+        gramsPerKwh: 500,
+        gramsPerCarKm: 150,
+        gramsPerTransitKm: 60,
+        gramsPerFlightKm: 300
+      };
+
+      await expect(calculator.connect(signers.alice).setFactors(newFactors))
+        .to.be.revertedWithCustomError(calculator, "AccessControlUnauthorizedAccount")
+        .withArgs(signers.alice.address, await calculator.ADMIN_ROLE());
+    });
+
+    it("should reject non-admin attempts to update factors with decimal precision", async function () {
+      await expect(calculator.connect(signers.alice).setFactorsDecimal(500, 150, 60, 300))
+        .to.be.revertedWithCustomError(calculator, "AccessControlUnauthorizedAccount")
+        .withArgs(signers.alice.address, await calculator.ADMIN_ROLE());
+    });
+
+    it("should allow admin to grant admin role to another user", async function () {
+      await calculator.connect(admin).grantRole(await calculator.ADMIN_ROLE(), signers.bob.address);
+      
+      // Bob should now be able to update factors
+      const newFactors = {
+        gramsPerKwh: 600,
+        gramsPerCarKm: 200,
+        gramsPerTransitKm: 80,
+        gramsPerFlightKm: 400
+      };
+
+      const tx = await calculator.connect(signers.bob).setFactors(newFactors);
+      await tx.wait();
+
+      const factors = await calculator.factors();
+      expect(factors.gramsPerKwh).to.equal(newFactors.gramsPerKwh);
     });
   });
 
@@ -532,7 +587,7 @@ describe("CibonCarbonFootprintCalculator", function () {
         gramsPerFlightKm: 400
       };
 
-      await expect(calculator.setFactors(newFactors))
+      await expect(calculator.connect(admin).setFactors(newFactors))
         .to.emit(calculator, "FactorsUpdated")
         .withArgs(newFactors.gramsPerKwh, newFactors.gramsPerCarKm, newFactors.gramsPerTransitKm, newFactors.gramsPerFlightKm);
     });

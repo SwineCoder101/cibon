@@ -8,11 +8,12 @@ import {
     externalEuint32
 } from "@fhevm/solidity/lib/FHE.sol";
 import { SepoliaConfig } from "@fhevm/solidity/config/ZamaConfig.sol";
+import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 
 /// @title CibonCarbonFootprintCalculator (Oracle-free)
 /// @notice Users submit encrypted activity; contract computes an encrypted total CO2e
 ///         and stores it per user. Only the user can decrypt their own total.
-contract CibonCarbonFootprintCalculator is SepoliaConfig {
+contract CibonCarbonFootprintCalculator is SepoliaConfig, AccessControl {
     /// -----------------------------------------------------------------------
     /// Events
     /// -----------------------------------------------------------------------
@@ -40,6 +41,11 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
     uint32 public constant SCALER_FACTOR = 1000;
 
     /// -----------------------------------------------------------------------
+    /// Admin role for managing emission factors
+    /// -----------------------------------------------------------------------
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    /// -----------------------------------------------------------------------
     /// Per-user encrypted totals (running total in grams CO2e)
     /// -----------------------------------------------------------------------
     mapping(address => euint64) private _userTotalGrams;
@@ -49,8 +55,13 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
     /// -----------------------------------------------------------------------
     mapping(address => bool) private _userHasData;
 
-    constructor(Factors memory initFactors) {
+    constructor(Factors memory initFactors, address admin) {
         factors = initFactors;
+        
+        // Set up admin role
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(ADMIN_ROLE, admin);
+        
         emit FactorsUpdated(
             initFactors.gramsPerKwh,
             initFactors.gramsPerCarKm,
@@ -59,13 +70,13 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
         );
     }
 
-    /// Admin update of factors (gate with Ownable in production)
-    function setFactors(Factors calldata f) external {
+    /// Admin update of factors (restricted to ADMIN_ROLE)
+    function setFactors(Factors calldata f) external onlyRole(ADMIN_ROLE) {
         factors = f;
         emit FactorsUpdated(f.gramsPerKwh, f.gramsPerCarKm, f.gramsPerTransitKm, f.gramsPerFlightKm);
     }
 
-    /// Admin update of factors with decimal precision
+    /// Admin update of factors with decimal precision (restricted to ADMIN_ROLE)
     /// @param kwhPerGrams Decimal factor for kWh (e.g., 0.4 = 400 with scaler)
     /// @param carPerGrams Decimal factor for car km (e.g., 0.12 = 120 with scaler)
     /// @param transitPerGrams Decimal factor for transit km (e.g., 0.05 = 50 with scaler)
@@ -75,7 +86,7 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
         uint32 carPerGrams,
         uint32 transitPerGrams,
         uint32 flightPerGrams
-    ) external {
+    ) external onlyRole(ADMIN_ROLE) {
         factors = Factors({
             gramsPerKwh: kwhPerGrams,
             gramsPerCarKm: carPerGrams,
