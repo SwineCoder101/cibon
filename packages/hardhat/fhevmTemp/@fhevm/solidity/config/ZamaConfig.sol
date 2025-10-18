@@ -3,45 +3,44 @@ pragma solidity ^0.8.24;
 
 import {SepoliaZamaOracleAddress} from "@zama-fhe/oracle-solidity/address/ZamaOracleAddress.sol";
 import {FHE} from "@fhevm/solidity/lib/FHE.sol";
-import {CoprocessorConfig} from "@fhevm/solidity/lib/Impl.sol";
+import {FHEVMConfigStruct} from "@fhevm/solidity/lib/Impl.sol";
 
 /**
  * @title   ZamaConfig.
  * @notice  This library returns the FHEVM config for different networks
- *          with the contract addresses for (1) ACL, (2) CoprocessorAddress, (3) DecryptionOracleAddress, (4) KMSVerifier,
+ *          with the contract addresses for (1) ACL, (2) FHEVMExecutor, (3) KMSVerifier, (4) InputVerifier
  *          which are deployed & maintained by Zama. It also returns the address of the decryption oracle.
  */
 library ZamaConfig {
-    function getSepoliaProtocolId() internal pure returns (uint256) {
-        /// @note Zama Ethereum Sepolia protocol id is '10000 + Zama Ethereum protocol id'
-        return 10001;
-    }
-
-    function getSepoliaConfig() internal pure returns (CoprocessorConfig memory) {
+    function getSepoliaConfig() internal pure returns (FHEVMConfigStruct memory) {
         return
-            CoprocessorConfig({
+            FHEVMConfigStruct({
                 ACLAddress: 0x50157CFfD6bBFA2DECe204a89ec419c23ef5755D,
-                CoprocessorAddress: 0xCD3ab3bd6bcc0c0bf3E27912a92043e817B1cf69,
-                DecryptionOracleAddress: SepoliaZamaOracleAddress,
-                KMSVerifierAddress: 0x1364cBBf2cDF5032C47d8226a6f6FBD2AFCDacAC
+                FHEVMExecutorAddress: 0xCD3ab3bd6bcc0c0bf3E27912a92043e817B1cf69,
+                KMSVerifierAddress: 0x1364cBBf2cDF5032C47d8226a6f6FBD2AFCDacAC,
+                InputVerifierAddress: 0x901F8942346f7AB3a01F6D7613119Bca447Bb030
             });
     }
 
-    function getEthereumProtocolId() internal pure returns (uint256) {
-        /// @note Zama Ethereum protocol id is '1'
-        return 1;
+    function getSepoliaOracleAddress() internal pure returns (address) {
+        return SepoliaZamaOracleAddress;
     }
 
-    function getEthereumConfig() internal pure returns (CoprocessorConfig memory) {
+    function getEthereumConfig() internal pure returns (FHEVMConfigStruct memory) {
         /// @note The addresses below are placeholders and should be replaced with actual addresses
         /// once deployed on the Ethereum mainnet.
         return
-            CoprocessorConfig({
+            FHEVMConfigStruct({
                 ACLAddress: address(0),
-                CoprocessorAddress: address(0),
-                DecryptionOracleAddress: address(0),
-                KMSVerifierAddress: address(0)
+                FHEVMExecutorAddress: address(0),
+                KMSVerifierAddress: address(0),
+                InputVerifierAddress: address(0)
             });
+    }
+
+    function getEthereumOracleAddress() internal pure returns (address) {
+        /// @note Placeholder, should be replaced with actual address once deployed.
+        return address(0);
     }
 }
 
@@ -55,10 +54,7 @@ library ZamaConfig {
 contract SepoliaConfig {
     constructor() {
         FHE.setCoprocessor(ZamaConfig.getSepoliaConfig());
-    }
-
-    function protocolId() public pure returns (uint256) {
-        return ZamaConfig.getSepoliaProtocolId();
+        FHE.setDecryptionOracle(ZamaConfig.getSepoliaOracleAddress());
     }
 }
 
@@ -72,9 +68,6 @@ contract SepoliaConfig {
 contract EthereumConfig {
     constructor() {
         FHE.setCoprocessor(ZamaConfig.getEthereumConfig());
-    }
-
-    function protocolId() public pure returns (uint256) {
-        return ZamaConfig.getEthereumProtocolId();
+        FHE.setDecryptionOracle(ZamaConfig.getEthereumOracleAddress());
     }
 }
