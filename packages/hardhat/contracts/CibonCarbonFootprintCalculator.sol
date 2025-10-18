@@ -21,17 +21,23 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
     event Cleared(address indexed user);
 
     /// -----------------------------------------------------------------------
-    /// Public emission factors (grams CO2e per unit)
+    /// Public emission factors (grams CO2e per unit with decimal precision)
     /// Keep these public/clear; user inputs & totals remain encrypted.
+    /// Uses scaler factor of 1000 for decimal precision (e.g., 0.4 = 400)
     /// -----------------------------------------------------------------------
     struct Factors {
-        uint32 gramsPerKwh;       // grams CO2e per kWh electricity
-        uint32 gramsPerCarKm;     // grams CO2e per km by car
-        uint32 gramsPerTransitKm; // grams CO2e per km public transit
-        uint32 gramsPerFlightKm;  // grams CO2e per flight km
+        uint32 gramsPerKwh;       // grams CO2e per kWh electricity (scaled by 1000)
+        uint32 gramsPerCarKm;     // grams CO2e per km by car (scaled by 1000)
+        uint32 gramsPerTransitKm; // grams CO2e per km public transit (scaled by 1000)
+        uint32 gramsPerFlightKm;  // grams CO2e per flight km (scaled by 1000)
     }
 
     Factors public factors;
+    
+    /// -----------------------------------------------------------------------
+    /// Scaler factor for decimal precision (1000 = 3 decimal places)
+    /// -----------------------------------------------------------------------
+    uint32 public constant SCALER_FACTOR = 1000;
 
     /// -----------------------------------------------------------------------
     /// Per-user encrypted totals (running total in grams CO2e)
@@ -57,6 +63,26 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
     function setFactors(Factors calldata f) external {
         factors = f;
         emit FactorsUpdated(f.gramsPerKwh, f.gramsPerCarKm, f.gramsPerTransitKm, f.gramsPerFlightKm);
+    }
+
+    /// Admin update of factors with decimal precision
+    /// @param kwhPerGrams Decimal factor for kWh (e.g., 0.4 = 400 with scaler)
+    /// @param carPerGrams Decimal factor for car km (e.g., 0.12 = 120 with scaler)
+    /// @param transitPerGrams Decimal factor for transit km (e.g., 0.05 = 50 with scaler)
+    /// @param flightPerGrams Decimal factor for flight km (e.g., 0.285 = 285 with scaler)
+    function setFactorsDecimal(
+        uint32 kwhPerGrams,
+        uint32 carPerGrams,
+        uint32 transitPerGrams,
+        uint32 flightPerGrams
+    ) external {
+        factors = Factors({
+            gramsPerKwh: kwhPerGrams,
+            gramsPerCarKm: carPerGrams,
+            gramsPerTransitKm: transitPerGrams,
+            gramsPerFlightKm: flightPerGrams
+        });
+        emit FactorsUpdated(kwhPerGrams, carPerGrams, transitPerGrams, flightPerGrams);
     }
 
     /// -----------------------------------------------------------------------
@@ -85,16 +111,16 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
         // The contract should already have permission to perform FHE operations on the encrypted inputs
 
         // Multiply encrypted values by public emission factors and sum
-        // NOTE: If your FHE lib prefers FHE.castToEuint64, swap accordingly.
+        // Apply scaler factor to get correct decimal precision
         euint64 totalThisSubmission =
             FHE.add(
                 FHE.add(
-                    FHE.mul(FHE.asEuint64(kwh),       FHE.asEuint64(uint64(factors.gramsPerKwh))),
-                    FHE.mul(FHE.asEuint64(carKm),     FHE.asEuint64(uint64(factors.gramsPerCarKm)))
+                    FHE.div(FHE.mul(FHE.asEuint64(kwh),       FHE.asEuint64(uint64(factors.gramsPerKwh))),       SCALER_FACTOR),
+                    FHE.div(FHE.mul(FHE.asEuint64(carKm),     FHE.asEuint64(uint64(factors.gramsPerCarKm))),     SCALER_FACTOR)
                 ),
                 FHE.add(
-                    FHE.mul(FHE.asEuint64(transitKm), FHE.asEuint64(uint64(factors.gramsPerTransitKm))),
-                    FHE.mul(FHE.asEuint64(flightKm),  FHE.asEuint64(uint64(factors.gramsPerFlightKm)))
+                    FHE.div(FHE.mul(FHE.asEuint64(transitKm), FHE.asEuint64(uint64(factors.gramsPerTransitKm))), SCALER_FACTOR),
+                    FHE.div(FHE.mul(FHE.asEuint64(flightKm),  FHE.asEuint64(uint64(factors.gramsPerFlightKm))),  SCALER_FACTOR)
                 )
             );
 

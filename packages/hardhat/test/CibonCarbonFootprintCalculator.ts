@@ -11,12 +11,13 @@ type Signers = {
   bob: HardhatEthersSigner;
 };
 
-// Test emission factors (grams CO2e per unit)
+// Test emission factors (grams CO2e per unit with decimal precision)
+// Using scaler factor of 1000 for 3 decimal places
 const TEST_FACTORS = {
-  gramsPerKwh: 400,        // 400g CO2e per kWh (typical grid electricity)
-  gramsPerCarKm: 120,      // 120g CO2e per km by car
-  gramsPerTransitKm: 50,   // 50g CO2e per km by public transit
-  gramsPerFlightKm: 285    // 285g CO2e per km by flight
+  gramsPerKwh: 400,        // 0.4 kg CO2e per kWh (400 with scaler)
+  gramsPerCarKm: 120,      // 0.12 kg CO2e per km by car (120 with scaler)
+  gramsPerTransitKm: 50,   // 0.05 kg CO2e per km by public transit (50 with scaler)
+  gramsPerFlightKm: 285    // 0.285 kg CO2e per km by flight (285 with scaler)
 };
 
 async function deployFixture() {
@@ -76,7 +77,7 @@ describe("CibonCarbonFootprintCalculator", function () {
   describe("Carbon Footprint Calculation - Happy Paths", function () {
     it("should calculate electricity consumption carbon footprint", async function () {
       const kwh = 50; // 50 kWh electricity consumption
-      const expectedGrams = kwh * TEST_FACTORS.gramsPerKwh; // 50 * 400 = 20,000g
+      const expectedGrams = (kwh * TEST_FACTORS.gramsPerKwh) / 1000; // 50 * 400 / 1000 = 20g
       
       // Create encrypted input for electricity consumption
       const encryptedInput = await fhevm
@@ -133,7 +134,7 @@ describe("CibonCarbonFootprintCalculator", function () {
 
     it("should calculate car travel carbon footprint", async function () {
       const carKm = 100; // 100 km by car
-      const expectedGrams = carKm * TEST_FACTORS.gramsPerCarKm; // 100 * 120 = 12,000g
+      const expectedGrams = (carKm * TEST_FACTORS.gramsPerCarKm) / 1000; // 100 * 120 / 1000 = 12g
       
       const encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -177,7 +178,7 @@ describe("CibonCarbonFootprintCalculator", function () {
 
     it("should calculate public transit carbon footprint", async function () {
       const transitKm = 200; // 200 km by public transit
-      const expectedGrams = transitKm * TEST_FACTORS.gramsPerTransitKm; // 200 * 50 = 10,000g
+      const expectedGrams = (transitKm * TEST_FACTORS.gramsPerTransitKm) / 1000; // 200 * 50 / 1000 = 10g
       
       const encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -221,7 +222,7 @@ describe("CibonCarbonFootprintCalculator", function () {
 
     it("should calculate flight carbon footprint", async function () {
       const flightKm = 500; // 500 km by flight
-      const expectedGrams = flightKm * TEST_FACTORS.gramsPerFlightKm; // 500 * 285 = 142,500g
+      const expectedGrams = (flightKm * TEST_FACTORS.gramsPerFlightKm) / 1000; // 500 * 285 / 1000 = 142.5g
       
       const encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -270,12 +271,12 @@ describe("CibonCarbonFootprintCalculator", function () {
       const flightKm = 200;  // 200 km by flight
       
       const expectedGrams = 
-        (kwh * TEST_FACTORS.gramsPerKwh) +
+        ((kwh * TEST_FACTORS.gramsPerKwh) +
         (carKm * TEST_FACTORS.gramsPerCarKm) +
         (transitKm * TEST_FACTORS.gramsPerTransitKm) +
-        (flightKm * TEST_FACTORS.gramsPerFlightKm);
-      // = (30 * 400) + (50 * 120) + (100 * 50) + (200 * 285)
-      // = 12,000 + 6,000 + 5,000 + 57,000 = 80,000g
+        (flightKm * TEST_FACTORS.gramsPerFlightKm)) / 1000;
+      // = ((30 * 400) + (50 * 120) + (100 * 50) + (200 * 285)) / 1000
+      // = (12,000 + 6,000 + 5,000 + 57,000) / 1000 = 80g
       
       const encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -320,7 +321,7 @@ describe("CibonCarbonFootprintCalculator", function () {
     it("should accumulate multiple submissions from the same user", async function () {
       // First submission: 20 kWh electricity
       const firstKwh = 20;
-      const firstExpected = firstKwh * TEST_FACTORS.gramsPerKwh; // 8,000g
+      const firstExpected = (firstKwh * TEST_FACTORS.gramsPerKwh) / 1000; // 8g
       
       let encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -345,7 +346,7 @@ describe("CibonCarbonFootprintCalculator", function () {
 
       // Second submission: 30 km by car
       const secondCarKm = 30;
-      const secondExpected = secondCarKm * TEST_FACTORS.gramsPerCarKm; // 3,600g
+      const secondExpected = (secondCarKm * TEST_FACTORS.gramsPerCarKm) / 1000; // 3.6g
       
       encryptedInput = await fhevm
         .createEncryptedInput(calculatorAddress, signers.alice.address)
@@ -469,6 +470,34 @@ describe("CibonCarbonFootprintCalculator", function () {
       expect(factors.gramsPerCarKm).to.equal(newFactors.gramsPerCarKm);
       expect(factors.gramsPerTransitKm).to.equal(newFactors.gramsPerTransitKm);
       expect(factors.gramsPerFlightKm).to.equal(newFactors.gramsPerFlightKm);
+    });
+
+    it("should allow updating emission factors with decimal precision", async function () {
+      // Test decimal factors: 0.5, 0.15, 0.06, 0.3 (scaled by 1000)
+      const newFactors = {
+        gramsPerKwh: 500,      // 0.5 kg CO2e per kWh
+        gramsPerCarKm: 150,     // 0.15 kg CO2e per km by car
+        gramsPerTransitKm: 60,  // 0.06 kg CO2e per km by transit
+        gramsPerFlightKm: 300   // 0.3 kg CO2e per km by flight
+      };
+
+      const tx = await calculator.setFactorsDecimal(
+        newFactors.gramsPerKwh,
+        newFactors.gramsPerCarKm,
+        newFactors.gramsPerTransitKm,
+        newFactors.gramsPerFlightKm
+      );
+      await tx.wait();
+
+      const factors = await calculator.factors();
+      expect(factors.gramsPerKwh).to.equal(newFactors.gramsPerKwh);
+      expect(factors.gramsPerCarKm).to.equal(newFactors.gramsPerCarKm);
+      expect(factors.gramsPerTransitKm).to.equal(newFactors.gramsPerTransitKm);
+      expect(factors.gramsPerFlightKm).to.equal(newFactors.gramsPerFlightKm);
+    });
+
+    it("should have correct scaler factor", async function () {
+      expect(await calculator.SCALER_FACTOR()).to.equal(1000);
     });
   });
 
