@@ -6,7 +6,7 @@
  import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
  import {ConfidentialFungibleToken} from "@openzeppelin/confidential-contracts/token/ConfidentialFungibleToken.sol";
  
- contract ConfidentialTokenExample is SepoliaConfig, ConfidentialFungibleToken, Ownable2Step {
+ contract CibonToken is SepoliaConfig, ConfidentialFungibleToken, Ownable2Step {
      constructor(
          uint64 amount,
          string memory name_,

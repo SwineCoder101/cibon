@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { ethers, fhevm } from 'hardhat';
 
-describe('ConfidentialTokenExample', function () {
+describe('CibonToken', function () {
   let token: any;
   let owner: any;
   let recipient: any;
@@ -14,11 +14,11 @@ describe('ConfidentialTokenExample', function () {
     [owner, recipient, other] = await ethers.getSigners();
 
     // Deploy ERC7984Example contract
-    token = await ethers.deployContract('ConfidentialTokenExample', [
+    token = await ethers.deployContract('CibonToken', [
       INITIAL_AMOUNT,
-      'Confidential Token',
-      'CTKN',
-      'https://example.com/token'
+      'Cibon',
+      'CBN',
+      'https://cibon.calculator.com'
     ]);
   });
 
