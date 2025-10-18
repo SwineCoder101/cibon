@@ -54,8 +54,5 @@
   "packageManager": "yarn@3.2.3",
   "engines": {
     "node": ">=20.18.3"
-  },
-  "dependencies": {
-    "@openzeppelin/confidential-contracts": "https://gitpkg.vercel.app/OpenZeppelin/openzeppelin-confidential-contracts/contracts?chore/migrate-0.2-0.8.0"
   }
 }
