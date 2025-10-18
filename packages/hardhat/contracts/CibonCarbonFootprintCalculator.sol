@@ -5,125 +5,62 @@ import {
     FHE,
     euint32,
     euint64,
-    externalEuint32,
-    ebool
+    externalEuint32
 } from "@fhevm/solidity/lib/FHE.sol";
 import { SepoliaConfig } from "@fhevm/solidity/config/ZamaConfig.sol";
 
-/// @dev Minimal mint interface for your carbon credit token (must grant MINTER to this contract)
-interface ICarbonCreditToken {
-    function mint(address to, uint256 amount) external;
-}
-
-/// @title CibonCarbonFootprintCalculator
-/// @notice Privacy-preserving carbon footprint calculator using FHEVM.
-///         Users submit encrypted activity; contract computes encrypted total CO2e.
-///         A designated oracle (off-chain) decrypts and calls oracleMint to drop credit tokens.
+/// @title CibonCarbonFootprintCalculator (Oracle-free)
+/// @notice Users submit encrypted activity; contract computes an encrypted total CO2e
+///         and stores it per user. Only the user can decrypt their own total.
 contract CibonCarbonFootprintCalculator is SepoliaConfig {
     /// -----------------------------------------------------------------------
     /// Events
     /// -----------------------------------------------------------------------
-    event Submitted(address indexed user);
+    event Submitted(address indexed user, bool accumulated);
     event FactorsUpdated(uint32 kwh, uint32 carKm, uint32 transitKm, uint32 flightKm);
-    event PolicyUpdated(uint64 baselineGrams, uint64 gramsPerToken);
-    event OracleUpdated(address indexed oracle);
-    event TokenUpdated(address indexed token);
-
-    /// -----------------------------------------------------------------------
-    /// Roles / Addresses
-    /// -----------------------------------------------------------------------
-    address public oracle;                 // Off-chain service allowed to mint based on clear totals
-    ICarbonCreditToken public creditToken; // ERC20 with a mint method callable by this contract
+    event Cleared(address indexed user);
 
     /// -----------------------------------------------------------------------
     /// Public emission factors (grams CO2e per unit)
-    /// Keep these public/clear; the inputs remain encrypted.
+    /// Keep these public/clear; user inputs & totals remain encrypted.
     /// -----------------------------------------------------------------------
     struct Factors {
         uint32 gramsPerKwh;       // grams CO2e per kWh electricity
         uint32 gramsPerCarKm;     // grams CO2e per km by car
         uint32 gramsPerTransitKm; // grams CO2e per km public transit
-        uint32 gramsPerFlightKm;  // grams CO2e per flight km (simple demo factor)
+        uint32 gramsPerFlightKm;  // grams CO2e per flight km
     }
 
     Factors public factors;
 
     /// -----------------------------------------------------------------------
-    /// Minting policy
-    /// baselineGrams: a period baseline (grams CO2e). If user's total < baseline,
-    /// they earn (baseline - total) / gramsPerToken credits.
-    /// -----------------------------------------------------------------------
-    uint64 public baselineGrams;
-    uint64 public gramsPerToken;
-
-    /// -----------------------------------------------------------------------
-    /// Per-user encrypted totals
+    /// Per-user encrypted totals (running total in grams CO2e)
     /// -----------------------------------------------------------------------
     mapping(address => euint64) private _userTotalGrams;
+    
+    /// -----------------------------------------------------------------------
+    /// Track which users have submitted data
+    /// -----------------------------------------------------------------------
+    mapping(address => bool) private _userHasData;
 
-    /// -----------------------------------------------------------------------
-    /// Modifiers
-    /// -----------------------------------------------------------------------
-    modifier onlyOracle() {
-        require(msg.sender == oracle, "Not oracle");
-        _;
-    }
-
-    modifier validToken() {
-        require(address(creditToken) != address(0), "Token not set");
-        _;
-    }
-
-    /// -----------------------------------------------------------------------
-    /// Constructor
-    /// -----------------------------------------------------------------------
-    constructor(
-        address oracle_,
-        address creditToken_,
-        Factors memory initFactors,
-        uint64 baselineGrams_,
-        uint64 gramsPerToken_
-    ) {
-        oracle = oracle_;
-        creditToken = ICarbonCreditToken(creditToken_);
+    constructor(Factors memory initFactors) {
         factors = initFactors;
-        baselineGrams = baselineGrams_;
-        gramsPerToken = gramsPerToken_;
-        emit FactorsUpdated(initFactors.gramsPerKwh, initFactors.gramsPerCarKm, initFactors.gramsPerTransitKm, initFactors.gramsPerFlightKm);
-        emit PolicyUpdated(baselineGrams, gramsPerToken);
-        emit OracleUpdated(oracle_);
-        emit TokenUpdated(creditToken_);
+        emit FactorsUpdated(
+            initFactors.gramsPerKwh,
+            initFactors.gramsPerCarKm,
+            initFactors.gramsPerTransitKm,
+            initFactors.gramsPerFlightKm
+        );
     }
 
-    /// -----------------------------------------------------------------------
-    /// Admin setters (ownerless demo; in production gate these with Ownable)
-    /// -----------------------------------------------------------------------
-    function setOracle(address oracle_) external {
-        oracle = oracle_;
-        emit OracleUpdated(oracle_);
-    }
-
-    function setCreditToken(address token_) external {
-        creditToken = ICarbonCreditToken(token_);
-        emit TokenUpdated(token_);
-    }
-
+    /// Admin update of factors (gate with Ownable in production)
     function setFactors(Factors calldata f) external {
         factors = f;
         emit FactorsUpdated(f.gramsPerKwh, f.gramsPerCarKm, f.gramsPerTransitKm, f.gramsPerFlightKm);
     }
 
-    function setPolicy(uint64 baselineGrams_, uint64 gramsPerToken_) external {
-        baselineGrams = baselineGrams_;
-        gramsPerToken = gramsPerToken_;
-        emit PolicyUpdated(baselineGrams_, gramsPerToken_);
-    }
-
     /// -----------------------------------------------------------------------
-    /// Submit encrypted activity
-    /// Users pass encrypted values + input proof (FHEVM pattern).
-    /// We multiply by public factors and sum to an encrypted total grams CO2e.
-    /// We grant view permissions to msg.sender and the oracle.
+    /// Submit encrypted activity (accumulates into caller's encrypted total)
     /// -----------------------------------------------------------------------
     struct EncryptedActivity {
         externalEuint32 kwh;        // electricity consumption
@@ -132,6 +69,9 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
         externalEuint32 flightKm;   // flight kilometers
     }
 
+    /// @notice Encrypt-aware submission: builds total = sum(activity_i * factor_i) and accumulates it.
+    /// @param enc external encrypted fields
+    /// @param inputProof FHEVM input proof (per SDK)
     function submitEncryptedActivity(
         EncryptedActivity calldata enc,
         bytes calldata inputProof
@@ -142,65 +82,58 @@ contract CibonCarbonFootprintCalculator is SepoliaConfig {
         euint32 transitKm  = FHE.fromExternal(enc.transitKm, inputProof);
         euint32 flightKm   = FHE.fromExternal(enc.flightKm, inputProof);
 
-        // Multiply encrypted values by public emission factors (grams per unit)
-        // NOTE: FHEVM supports multiplying ciphertext by a public scalar.
-        // Convert plain uint64 factors to encrypted euint64 for multiplication.
-        euint64 total =
+        // The contract should already have permission to perform FHE operations on the encrypted inputs
+
+        // Multiply encrypted values by public emission factors and sum
+        // NOTE: If your FHE lib prefers FHE.castToEuint64, swap accordingly.
+        euint64 totalThisSubmission =
             FHE.add(
                 FHE.add(
-                    FHE.mul(FHE.asEuint64(kwh), FHE.asEuint64(uint64(factors.gramsPerKwh))),
-                    FHE.mul(FHE.asEuint64(carKm), FHE.asEuint64(uint64(factors.gramsPerCarKm)))
+                    FHE.mul(FHE.asEuint64(kwh),       FHE.asEuint64(uint64(factors.gramsPerKwh))),
+                    FHE.mul(FHE.asEuint64(carKm),     FHE.asEuint64(uint64(factors.gramsPerCarKm)))
                 ),
                 FHE.add(
                     FHE.mul(FHE.asEuint64(transitKm), FHE.asEuint64(uint64(factors.gramsPerTransitKm))),
-                    FHE.mul(FHE.asEuint64(flightKm), FHE.asEuint64(uint64(factors.gramsPerFlightKm)))
+                    FHE.mul(FHE.asEuint64(flightKm),  FHE.asEuint64(uint64(factors.gramsPerFlightKm)))
                 )
             );
 
-        // Accumulate with any prior submissions for the period (optional)
+        // Accumulate with any prior total (still encrypted)
         euint64 prior = _userTotalGrams[msg.sender];
-        euint64 updated = FHE.add(prior, total);
-        _userTotalGrams[msg.sender] = updated;
-
-        // Grant viewing to: this contract (for possible future logic), the sender, and the oracle.
-        FHE.allowThis(updated);
-        FHE.allow(updated, msg.sender);
-        if (oracle != address(0)) {
-            FHE.allow(updated, oracle);
+        
+        // If this is the first submission, prior will be zero, so we can just use totalThisSubmission
+        // Otherwise, we need to add them together
+        euint64 updated;
+        if (_userHasData[msg.sender]) {
+            updated = FHE.add(prior, totalThisSubmission);
+        } else {
+            updated = totalThisSubmission;
         }
+        
+        _userTotalGrams[msg.sender] = updated;
+        
+        // Mark that this user has submitted data
+        _userHasData[msg.sender] = true;
 
-        emit Submitted(msg.sender);
+        // Grant viewing to the user and allow this contract to perform future operations
+        FHE.allow(updated, msg.sender);
+        FHE.allow(updated, address(this));
+
+        emit Submitted(msg.sender, true);
     }
 
-    /// @notice Return the caller's encrypted total (ciphertext-handle type).
+    /// -----------------------------------------------------------------------
+    /// Reads
+    /// -----------------------------------------------------------------------
+
+    /// @notice Return the caller's encrypted running total (ciphertext handle).
+    /// @dev Only the caller (who has view permission) can decrypt off-chain via the FHE SDK.
     function getMyEncryptedTotal() external view returns (euint64) {
         return _userTotalGrams[msg.sender];
     }
 
-    /// @notice View any user's encrypted total (useful for oracle; visibility is still permissioned by FHEVM).
-    function getEncryptedTotalOf(address user) external view returns (euint64) {
-        return _userTotalGrams[user];
-    }
-
-    /// -----------------------------------------------------------------------
-    /// Oracle settlement: mint credits based on clear total
-    /// The oracle decrypts the user's encrypted total off-chain and calls this with the clear grams value.
-    /// Policy: credits = max(0, (baselineGrams - totalGrams)) / gramsPerToken
-    /// -----------------------------------------------------------------------
-    function oracleMint(address user, uint64 totalGramsClear)
-        external
-        onlyOracle
-        validToken
-    {
-        require(gramsPerToken > 0, "Invalid policy");
-        uint256 credits = 0;
-        if (totalGramsClear < baselineGrams) {
-            credits = (uint256(baselineGrams) - uint256(totalGramsClear)) / uint256(gramsPerToken);
-        }
-        if (credits > 0) {
-            creditToken.mint(user, credits);
-        }
-        // (Optional) reset user's running total after minting for a "periodic" program:
-        // delete _userTotalGrams[user];
+    /// @notice (Optional) check if a user has a non-zero ciphertext stored.
+    function hasTotal(address user) external view returns (bool) {
+        return _userHasData[user];
     }
 }
