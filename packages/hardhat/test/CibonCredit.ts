@@ -1,8 +1,8 @@
 import { expect } from 'chai';
 import { ethers, fhevm } from 'hardhat';
 
-describe('CibonToken', function () {
-  let token: any;
+describe('CibonCredit', function () {
+  let credit: any;
   let owner: any;
   let recipient: any;
   let other: any;
@@ -13,11 +13,11 @@ describe('CibonToken', function () {
   beforeEach(async function () {
     [owner, recipient, other] = await ethers.getSigners();
 
-    // Deploy ERC7984Example contract
-    token = await ethers.deployContract('CibonToken', [
+    // Deploy CibonCredit contract
+    credit = await ethers.deployContract('CibonCredit', [
       INITIAL_AMOUNT,
-      'Cibon',
-      'CBN',
+      'Cibon Carbon Credits',
+      'CC',
       'https://cibon.calculator.com'
     ]);
   });
@@ -26,12 +26,12 @@ describe('CibonToken', function () {
     it('should transfer tokens from owner to recipient', async function () {
       // Create encrypted input for transfer amount
       const encryptedInput = await fhevm
-        .createEncryptedInput(await token.getAddress(), owner.address)
+        .createEncryptedInput(await credit.getAddress(), owner.address)
         .add64(TRANSFER_AMOUNT)
         .encrypt();
 
       // Perform the confidential transfer
-      await expect(token
+      await expect(credit
         .connect(owner)
         ['confidentialTransfer(address,bytes32,bytes)'](
           recipient.address,
@@ -40,8 +40,8 @@ describe('CibonToken', function () {
         )).to.not.be.reverted;
 
       // Check that both addresses have balance handles (without decryption for now)
-      const recipientBalanceHandle = await token.confidentialBalanceOf(recipient.address);
-      const ownerBalanceHandle = await token.confidentialBalanceOf(owner.address);
+      const recipientBalanceHandle = await credit.confidentialBalanceOf(recipient.address);
+      const ownerBalanceHandle = await credit.confidentialBalanceOf(owner.address);
       expect(recipientBalanceHandle).to.not.be.undefined;
       expect(ownerBalanceHandle).to.not.be.undefined;
     });

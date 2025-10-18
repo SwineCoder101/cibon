@@ -2,6 +2,8 @@ import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { ethers, fhevm } from "hardhat";
 import { CibonCarbonFootprintCalculator } from "../typechain-types/contracts/CibonCarbonFootprintCalculator.sol";
 import { CibonCarbonFootprintCalculator__factory } from "../typechain-types/factories/contracts/CibonCarbonFootprintCalculator.sol";
+import { CibonCredit } from "../typechain-types/contracts/CibonCredit.sol";
+import { CibonCredit__factory } from "../typechain-types/factories/contracts/CibonCredit.sol";
 import { expect } from "chai";
 import { FhevmType } from "@fhevm/hardhat-plugin";
 
@@ -26,13 +28,27 @@ async function deployFixture() {
   const deployer = ethSigners[0];
   const admin = ethSigners[3]; // Use the 4th signer as admin (index 3)
   
-  // Deploy the carbon footprint calculator (oracle-free version)
-  const factory = (await ethers.getContractFactory("CibonCarbonFootprintCalculator")) as CibonCarbonFootprintCalculator__factory;
-  const calculator = await factory.deploy(TEST_FACTORS, admin.address);
+  // Deploy CibonCredit first
+  const creditFactory = (await ethers.getContractFactory("CibonCredit")) as CibonCredit__factory;
+  const credit = await creditFactory.deploy(
+    1000000, // Initial supply: 1M tokens
+    "Cibon Carbon Credits",
+    "CC",
+    "https://cibon.io/metadata/"
+  );
+  
+  // Deploy the carbon footprint calculator with credit reference
+  const calculatorFactory = (await ethers.getContractFactory("CibonCarbonFootprintCalculator")) as CibonCarbonFootprintCalculator__factory;
+  const calculator = await calculatorFactory.deploy(TEST_FACTORS, admin.address, await credit.getAddress());
+  
+  // Grant minter role to the calculator
+  await credit.grantMinterRole(await calculator.getAddress());
   
   return { 
     calculator,
     calculatorAddress: await calculator.getAddress(),
+    credit,
+    creditAddress: await credit.getAddress(),
     admin
   };
 }
@@ -41,6 +57,8 @@ describe("CibonCarbonFootprintCalculator", function () {
   let signers: Signers;
   let calculator: CibonCarbonFootprintCalculator;
   let calculatorAddress: string;
+  let credit: CibonCredit;
+  let creditAddress: string;
   let admin: HardhatEthersSigner;
 
   before(async function () {
@@ -60,7 +78,7 @@ describe("CibonCarbonFootprintCalculator", function () {
       this.skip();
     }
 
-    ({ calculator, calculatorAddress, admin } = await deployFixture());
+    ({ calculator, calculatorAddress, credit, creditAddress, admin } = await deployFixture());
   });
 
   describe("Deployment", function () {
@@ -553,6 +571,180 @@ describe("CibonCarbonFootprintCalculator", function () {
 
       const factors = await calculator.factors();
       expect(factors.gramsPerKwh).to.equal(newFactors.gramsPerKwh);
+    });
+  });
+
+  describe("Credit Minting System", function () {
+    it("should calculate credits correctly", async function () {
+      // Test with 1000g CO2e (1kg)
+      const carbonFootprint = 1000; // 1kg CO2e
+      const expectedCredits = (1 * 100 * 1000 * 800) / 1000000; // = 80 credits
+      
+      const credits = await calculator.calculateCredits(carbonFootprint);
+      expect(credits).to.equal(expectedCredits);
+    });
+
+    it("should return 0 credits when minting is disabled", async function () {
+      // Disable minting
+      await calculator.connect(admin).updateCreditParameters(100, 1000, 800, false);
+      
+      const credits = await calculator.calculateCredits(1000);
+      expect(credits).to.equal(0);
+    });
+
+    it("should allow users to request assessment", async function () {
+      // First submit some data
+      const encryptedInput = await fhevm
+        .createEncryptedInput(calculatorAddress, signers.alice.address)
+        .add32(50)      // electricity
+        .add32(0)       // car km
+        .add32(0)       // transit km
+        .add32(0)       // flight km
+        .encrypt();
+
+      await calculator.connect(signers.alice).submitEncryptedActivity(
+        {
+          kwh: encryptedInput.handles[0],
+          carKm: encryptedInput.handles[1],
+          transitKm: encryptedInput.handles[2],
+          flightKm: encryptedInput.handles[3]
+        },
+        encryptedInput.inputProof
+      );
+
+      // Request assessment
+      await expect(calculator.connect(signers.alice).requestAssessment())
+        .to.emit(calculator, "AssessmentRequested")
+        .withArgs(signers.alice.address, 0);
+    });
+
+    it("should reject assessment request without data", async function () {
+      await expect(calculator.connect(signers.alice).requestAssessment())
+        .to.be.revertedWith("No carbon footprint data submitted");
+    });
+
+    it("should allow admin to approve assessment and mint tokens", async function () {
+      // First submit some data and request assessment
+      const encryptedInput = await fhevm
+        .createEncryptedInput(calculatorAddress, signers.alice.address)
+        .add32(50)      // electricity
+        .add32(0)       // car km
+        .add32(0)       // transit km
+        .add32(0)       // flight km
+        .encrypt();
+
+      await calculator.connect(signers.alice).submitEncryptedActivity(
+        {
+          kwh: encryptedInput.handles[0],
+          carKm: encryptedInput.handles[1],
+          transitKm: encryptedInput.handles[2],
+          flightKm: encryptedInput.handles[3]
+        },
+        encryptedInput.inputProof
+      );
+
+      await calculator.connect(signers.alice).requestAssessment();
+
+      // Admin approves assessment
+      const carbonFootprint = 20000; // 20kg CO2e
+      const expectedCredits = (20 * 100 * 1000 * 800) / 1000000; // = 1600 credits
+
+      // Verify both the calculator and token events are emitted
+      await expect(calculator.connect(admin).approveAssessment(signers.alice.address, carbonFootprint))
+        .to.emit(calculator, "CreditsMinted")
+        .withArgs(signers.alice.address, expectedCredits, carbonFootprint)
+        .and.to.emit(credit, "CreditsMinted")
+        .withArgs(signers.alice.address, expectedCredits);
+
+      // Verify the assessment was recorded
+      const assessment = await calculator.getUserAssessment(signers.alice.address);
+      expect(assessment.approved).to.be.true;
+      expect(assessment.processed).to.be.true;
+      expect(assessment.creditsEarned).to.equal(expectedCredits);
+      expect(assessment.carbonFootprint).to.equal(carbonFootprint);
+
+      // Note: In FHEVM mock environment, we can't easily verify encrypted token balances
+      // In a real FHEVM network, we would check the user's encrypted token balance
+      console.log(`✅ Assessment approved: ${expectedCredits} CibonCredit (CC) tokens minted to ${signers.alice.address}`);
+    });
+
+    it("should allow admin to reject assessment", async function () {
+      // First submit some data and request assessment
+      const encryptedInput = await fhevm
+        .createEncryptedInput(calculatorAddress, signers.alice.address)
+        .add32(50)      // electricity
+        .add32(0)       // car km
+        .add32(0)       // transit km
+        .add32(0)       // flight km
+        .encrypt();
+
+      await calculator.connect(signers.alice).submitEncryptedActivity(
+        {
+          kwh: encryptedInput.handles[0],
+          carKm: encryptedInput.handles[1],
+          transitKm: encryptedInput.handles[2],
+          flightKm: encryptedInput.handles[3]
+        },
+        encryptedInput.inputProof
+      );
+
+      await calculator.connect(signers.alice).requestAssessment();
+
+      // Admin rejects assessment
+      await calculator.connect(admin).rejectAssessment(signers.alice.address);
+
+      const assessment = await calculator.getUserAssessment(signers.alice.address);
+      expect(assessment.approved).to.be.false;
+      expect(assessment.processed).to.be.true;
+      expect(assessment.creditsEarned).to.equal(0);
+    });
+
+    it("should allow admin to update credit parameters", async function () {
+      const newBaseRate = 200;
+      const newScaleFactor = 1500;
+      const newWeightingFactor = 900;
+      const mintingEnabled = true;
+
+      await expect(calculator.connect(admin).updateCreditParameters(
+        newBaseRate,
+        newScaleFactor,
+        newWeightingFactor,
+        mintingEnabled
+      ))
+        .to.emit(calculator, "CreditParametersUpdated")
+        .withArgs(newBaseRate, newScaleFactor, newWeightingFactor);
+
+      const params = await calculator.creditParams();
+      expect(params.baseRate).to.equal(newBaseRate);
+      expect(params.scaleFactor).to.equal(newScaleFactor);
+      expect(params.weightingFactor).to.equal(newWeightingFactor);
+      expect(params.mintingEnabled).to.equal(mintingEnabled);
+    });
+
+    it("should track pending assessments", async function () {
+      // Submit data and request assessment
+      const encryptedInput = await fhevm
+        .createEncryptedInput(calculatorAddress, signers.alice.address)
+        .add32(50)      // electricity
+        .add32(0)       // car km
+        .add32(0)       // transit km
+        .add32(0)       // flight km
+        .encrypt();
+
+      await calculator.connect(signers.alice).submitEncryptedActivity(
+        {
+          kwh: encryptedInput.handles[0],
+          carKm: encryptedInput.handles[1],
+          transitKm: encryptedInput.handles[2],
+          flightKm: encryptedInput.handles[3]
+        },
+        encryptedInput.inputProof
+      );
+
+      await calculator.connect(signers.alice).requestAssessment();
+
+      const pendingAssessments = await calculator.getPendingAssessments();
+      expect(pendingAssessments).to.include(signers.alice.address);
     });
   });
 
